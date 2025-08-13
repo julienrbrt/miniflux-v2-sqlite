@@ -7,15 +7,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
-	"github.com/lib/pq"
 	"miniflux.app/v2/internal/model"
 )
 
 // AnotherCategoryExists checks if another category exists with the same title.
 func (s *Storage) AnotherCategoryExists(userID, categoryID int64, title string) bool {
 	var result bool
-	query := `SELECT true FROM categories WHERE user_id=$1 AND id != $2 AND lower(title)=lower($3) LIMIT 1`
+	query := `SELECT true FROM categories WHERE user_id=? AND id != ? AND lower(title)=lower(?) LIMIT 1`
 	s.db.QueryRow(query, userID, categoryID, title).Scan(&result)
 	return result
 }
@@ -23,7 +23,7 @@ func (s *Storage) AnotherCategoryExists(userID, categoryID int64, title string) 
 // CategoryTitleExists checks if the given category exists into the database.
 func (s *Storage) CategoryTitleExists(userID int64, title string) bool {
 	var result bool
-	query := `SELECT true FROM categories WHERE user_id=$1 AND lower(title)=lower($2) LIMIT 1`
+	query := `SELECT true FROM categories WHERE user_id=? AND lower(title)=lower(?) LIMIT 1`
 	s.db.QueryRow(query, userID, title).Scan(&result)
 	return result
 }
@@ -31,7 +31,7 @@ func (s *Storage) CategoryTitleExists(userID int64, title string) bool {
 // CategoryIDExists checks if the given category exists into the database.
 func (s *Storage) CategoryIDExists(userID, categoryID int64) bool {
 	var result bool
-	query := `SELECT true FROM categories WHERE user_id=$1 AND id=$2 LIMIT 1`
+	query := `SELECT true FROM categories WHERE user_id=? AND id=? LIMIT 1`
 	s.db.QueryRow(query, userID, categoryID).Scan(&result)
 	return result
 }
@@ -40,7 +40,7 @@ func (s *Storage) CategoryIDExists(userID, categoryID int64) bool {
 func (s *Storage) Category(userID, categoryID int64) (*model.Category, error) {
 	var category model.Category
 
-	query := `SELECT id, user_id, title, hide_globally FROM categories WHERE user_id=$1 AND id=$2`
+	query := `SELECT id, user_id, title, hide_globally FROM categories WHERE user_id=? AND id=?`
 	err := s.db.QueryRow(query, userID, categoryID).Scan(&category.ID, &category.UserID, &category.Title, &category.HideGlobally)
 
 	switch {
@@ -55,7 +55,7 @@ func (s *Storage) Category(userID, categoryID int64) (*model.Category, error) {
 
 // FirstCategory returns the first category for the given user.
 func (s *Storage) FirstCategory(userID int64) (*model.Category, error) {
-	query := `SELECT id, user_id, title, hide_globally FROM categories WHERE user_id=$1 ORDER BY title ASC LIMIT 1`
+	query := `SELECT id, user_id, title, hide_globally FROM categories WHERE user_id=? ORDER BY title ASC LIMIT 1`
 
 	var category model.Category
 	err := s.db.QueryRow(query, userID).Scan(&category.ID, &category.UserID, &category.Title, &category.HideGlobally)
@@ -74,7 +74,7 @@ func (s *Storage) FirstCategory(userID int64) (*model.Category, error) {
 func (s *Storage) CategoryByTitle(userID int64, title string) (*model.Category, error) {
 	var category model.Category
 
-	query := `SELECT id, user_id, title, hide_globally FROM categories WHERE user_id=$1 AND title=$2`
+	query := `SELECT id, user_id, title, hide_globally FROM categories WHERE user_id=? AND title=?`
 	err := s.db.QueryRow(query, userID, title).Scan(&category.ID, &category.UserID, &category.Title, &category.HideGlobally)
 
 	switch {
@@ -89,7 +89,7 @@ func (s *Storage) CategoryByTitle(userID int64, title string) (*model.Category, 
 
 // Categories returns all categories that belongs to the given user.
 func (s *Storage) Categories(userID int64) (model.Categories, error) {
-	query := `SELECT id, user_id, title, hide_globally FROM categories WHERE user_id=$1 ORDER BY title ASC`
+	query := `SELECT id, user_id, title, hide_globally FROM categories WHERE user_id=? ORDER BY title ASC`
 	rows, err := s.db.Query(query, userID)
 	if err != nil {
 		return nil, fmt.Errorf(`store: unable to fetch categories: %v`, err)
@@ -126,10 +126,10 @@ func (s *Storage) CategoriesWithFeedCount(userID int64) (model.Categories, error
 			(SELECT count(*)
 			   FROM feeds
 			     JOIN entries ON (feeds.id = entries.feed_id)
-			   WHERE feeds.category_id = c.id AND entries.status = $1) AS count_unread
+			   WHERE feeds.category_id = c.id AND entries.status = ?) AS count_unread
 		FROM categories c
 		WHERE
-			user_id=$2
+			user_id=?
 	`
 
 	if user.CategoriesSortingOrder == "alphabetical" {
@@ -166,25 +166,33 @@ func (s *Storage) CategoriesWithFeedCount(userID int64) (model.Categories, error
 
 // CreateCategory creates a new category.
 func (s *Storage) CreateCategory(userID int64, request *model.CategoryCreationRequest) (*model.Category, error) {
-	var category model.Category
-
 	query := `
 		INSERT INTO categories
 			(user_id, title, hide_globally)
 		VALUES
-			($1, $2, $3)
-		RETURNING
-			id,
-			user_id,
-			title,
-			hide_globally
+			(?, ?, ?)
 	`
-	err := s.db.QueryRow(
+	result, err := s.db.Exec(
 		query,
 		userID,
 		request.Title,
 		request.HideGlobally,
-	).Scan(
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf(`store: unable to create category %q for user ID %d: %v`, request.Title, userID, err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf(`store: unable to get category ID: %v`, err)
+	}
+
+	// Get the created category
+	var category model.Category
+	err = s.db.QueryRow(`
+		SELECT id, user_id, title, hide_globally
+		FROM categories WHERE id = ?`, id).Scan(
 		&category.ID,
 		&category.UserID,
 		&category.Title,
@@ -192,7 +200,7 @@ func (s *Storage) CreateCategory(userID int64, request *model.CategoryCreationRe
 	)
 
 	if err != nil {
-		return nil, fmt.Errorf(`store: unable to create category %q for user ID %d: %v`, request.Title, userID, err)
+		return nil, fmt.Errorf(`store: unable to fetch created category: %v`, err)
 	}
 
 	return &category, nil
@@ -200,7 +208,7 @@ func (s *Storage) CreateCategory(userID int64, request *model.CategoryCreationRe
 
 // UpdateCategory updates an existing category.
 func (s *Storage) UpdateCategory(category *model.Category) error {
-	query := `UPDATE categories SET title=$1, hide_globally=$2 WHERE id=$3 AND user_id=$4`
+	query := `UPDATE categories SET title=?, hide_globally=? WHERE id=? AND user_id=?`
 	_, err := s.db.Exec(
 		query,
 		category.Title,
@@ -218,7 +226,7 @@ func (s *Storage) UpdateCategory(category *model.Category) error {
 
 // RemoveCategory deletes a category.
 func (s *Storage) RemoveCategory(userID, categoryID int64) error {
-	query := `DELETE FROM categories WHERE id = $1 AND user_id = $2`
+	query := `DELETE FROM categories WHERE id = ? AND user_id = ?`
 	result, err := s.db.Exec(query, categoryID, userID)
 	if err != nil {
 		return fmt.Errorf(`store: unable to remove this category: %v`, err)
@@ -244,10 +252,18 @@ func (s *Storage) RemoveAndReplaceCategoriesByName(userid int64, titles []string
 		return errors.New("store: unable to begin transaction")
 	}
 
-	titleParam := pq.Array(titles)
 	var count int
 	query := "SELECT count(*) FROM categories WHERE user_id = $1 and title != ANY($2)"
-	err = tx.QueryRow(query, userid, titleParam).Scan(&count)
+	// For SQLite, we need to use IN clause with placeholders
+	placeholders := make([]string, len(titles))
+	args := make([]interface{}, len(titles)+1)
+	args[0] = userid
+	for i, title := range titles {
+		placeholders[i] = "?"
+		args[i+1] = title
+	}
+	query = fmt.Sprintf("SELECT count(*) FROM categories WHERE user_id = ? and title NOT IN (%s)", strings.Join(placeholders, ","))
+	err = tx.QueryRow(query, args...).Scan(&count)
 	if err != nil {
 		tx.Rollback()
 		return errors.New("store: unable to retrieve category count")
@@ -257,25 +273,50 @@ func (s *Storage) RemoveAndReplaceCategoriesByName(userid int64, titles []string
 		return errors.New("store: at least 1 category must remain after deletion")
 	}
 
-	query = `
-		WITH d_cats AS (SELECT id FROM categories WHERE user_id = $1 AND title = ANY($2))
-		UPDATE feeds
-		 SET category_id =
-		  (SELECT id
-			FROM categories
-			WHERE user_id = $1 AND id NOT IN (SELECT id FROM d_cats)
-			ORDER BY title ASC
-			LIMIT 1)
-		WHERE user_id = $1 AND category_id IN (SELECT id FROM d_cats)
-	`
-	_, err = tx.Exec(query, userid, titleParam)
+	// Get category IDs to delete
+	placeholders = make([]string, len(titles))
+	args = make([]interface{}, len(titles)+1)
+	args[0] = userid
+	for i, title := range titles {
+		placeholders[i] = "?"
+		args[i+1] = title
+	}
+
+	// Get the first remaining category ID
+	var firstCategoryID int64
+	query = fmt.Sprintf("SELECT id FROM categories WHERE user_id = ? AND title NOT IN (%s) ORDER BY title ASC LIMIT 1", strings.Join(placeholders, ","))
+	err = tx.QueryRow(query, args...).Scan(&firstCategoryID)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("store: unable to find replacement category: %v", err)
+	}
+
+	// Update feeds to use the first remaining category
+	placeholders = make([]string, len(titles))
+	args = make([]interface{}, len(titles)+2)
+	args[0] = firstCategoryID
+	args[1] = userid
+	for i, title := range titles {
+		placeholders[i] = "?"
+		args[i+2] = title
+	}
+	query = fmt.Sprintf("UPDATE feeds SET category_id = ? WHERE user_id = ? AND category_id IN (SELECT id FROM categories WHERE user_id = ? AND title IN (%s))", strings.Join(placeholders, ","))
+	args = append([]interface{}{firstCategoryID, userid, userid}, args[2:]...)
+	_, err = tx.Exec(query, args...)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("store: unable to replace categories: %v", err)
 	}
 
-	query = "DELETE FROM categories WHERE user_id = $1 AND title = ANY($2)"
-	_, err = tx.Exec(query, userid, titleParam)
+	placeholders = make([]string, len(titles))
+	args = make([]interface{}, len(titles)+1)
+	args[0] = userid
+	for i, title := range titles {
+		placeholders[i] = "?"
+		args[i+1] = title
+	}
+	query = fmt.Sprintf("DELETE FROM categories WHERE user_id = ? AND title IN (%s)", strings.Join(placeholders, ","))
+	_, err = tx.Exec(query, args...)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("store: unable to delete categories: %v", err)

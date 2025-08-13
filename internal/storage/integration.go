@@ -13,7 +13,7 @@ import (
 
 // HasDuplicateFeverUsername checks if another user have the same Fever username.
 func (s *Storage) HasDuplicateFeverUsername(userID int64, feverUsername string) bool {
-	query := `SELECT true FROM integrations WHERE user_id != $1 AND fever_username=$2 LIMIT 1`
+	query := `SELECT true FROM integrations WHERE user_id != ? AND fever_username=? LIMIT 1`
 	var result bool
 	s.db.QueryRow(query, userID, feverUsername).Scan(&result)
 	return result
@@ -21,7 +21,7 @@ func (s *Storage) HasDuplicateFeverUsername(userID int64, feverUsername string) 
 
 // HasDuplicateGoogleReaderUsername checks if another user have the same Google Reader username.
 func (s *Storage) HasDuplicateGoogleReaderUsername(userID int64, googleReaderUsername string) bool {
-	query := `SELECT true FROM integrations WHERE user_id != $1 AND googlereader_username=$2 LIMIT 1`
+	query := `SELECT true FROM integrations WHERE user_id != ? AND googlereader_username=? LIMIT 1`
 	var result bool
 	s.db.QueryRow(query, userID, googleReaderUsername).Scan(&result)
 	return result
@@ -37,7 +37,7 @@ func (s *Storage) UserByFeverToken(token string) (*model.User, error) {
 		LEFT JOIN
 			integrations ON integrations.user_id=users.id
 		WHERE
-			integrations.fever_enabled='t' AND lower(integrations.fever_token)=lower($1)
+			integrations.fever_enabled=1 AND lower(integrations.fever_token)=lower(?)
 	`
 
 	var user model.User
@@ -62,7 +62,7 @@ func (s *Storage) GoogleReaderUserCheckPassword(username, password string) error
 		FROM
 			integrations
 		WHERE
-			integrations.googlereader_enabled='t' AND integrations.googlereader_username=$1
+			integrations.googlereader_enabled=1 AND integrations.googlereader_username=?
 	`
 
 	err := s.db.QueryRow(query, username).Scan(&hash)
@@ -92,7 +92,7 @@ func (s *Storage) GoogleReaderUserGetIntegration(username string) (*model.Integr
 		FROM
 			integrations
 		WHERE
-			integrations.googlereader_enabled='t' AND integrations.googlereader_username=$1
+			integrations.googlereader_enabled=1 AND integrations.googlereader_username=?
 	`
 
 	err := s.db.QueryRow(query, username).Scan(&integration.UserID, &integration.GoogleReaderEnabled, &integration.GoogleReaderUsername, &integration.GoogleReaderPassword)
@@ -224,7 +224,7 @@ func (s *Storage) Integration(userID int64) (*model.Integration, error) {
 		FROM
 			integrations
 		WHERE
-			user_id=$1
+			user_id=?
 	`
 	var integration model.Integration
 	err := s.db.QueryRow(query, userID).Scan(
@@ -357,119 +357,119 @@ func (s *Storage) UpdateIntegration(integration *model.Integration) error {
 		UPDATE
 			integrations
 		SET
-			pinboard_enabled=$1,
-			pinboard_token=$2,
-			pinboard_tags=$3,
-			pinboard_mark_as_unread=$4,
-			instapaper_enabled=$5,
-			instapaper_username=$6,
-			instapaper_password=$7,
-			fever_enabled=$8,
-			fever_username=$9,
-			fever_token=$10,
-			wallabag_enabled=$11,
-			wallabag_only_url=$12,
-			wallabag_url=$13,
-			wallabag_client_id=$14,
-			wallabag_client_secret=$15,
-			wallabag_username=$16,
-			wallabag_password=$17,
-			nunux_keeper_enabled=$18,
-			nunux_keeper_url=$19,
-			nunux_keeper_api_key=$20,
-			googlereader_enabled=$21,
-			googlereader_username=$22,
-			googlereader_password=$23,
-			telegram_bot_enabled=$24,
-			telegram_bot_token=$25,
-			telegram_bot_chat_id=$26,
-			telegram_bot_topic_id=$27,
-			telegram_bot_disable_web_page_preview=$28,
-			telegram_bot_disable_notification=$29,
-			telegram_bot_disable_buttons=$30,
-			espial_enabled=$31,
-			espial_url=$32,
-			espial_api_key=$33,
-			espial_tags=$34,
-			linkace_enabled=$35,
-			linkace_url=$36,
-			linkace_api_key=$37,
-			linkace_tags=$38,
-			linkace_is_private=$39,
-			linkace_check_disabled=$40,
-			linkding_enabled=$41,
-			linkding_url=$42,
-			linkding_api_key=$43,
-			linkding_tags=$44,
-			linkding_mark_as_unread=$45,
-			matrix_bot_enabled=$46,
-			matrix_bot_user=$47,
-			matrix_bot_password=$48,
-			matrix_bot_url=$49,
-			matrix_bot_chat_id=$50,
-			notion_enabled=$51,
-			notion_token=$52,
-			notion_page_id=$53,
-			readwise_enabled=$54,
-			readwise_api_key=$55,
-			apprise_enabled=$56,
-			apprise_url=$57,
-			apprise_services_url=$58,
-			readeck_enabled=$59,
-			readeck_url=$60,
-			readeck_api_key=$61,
-			readeck_labels=$62,
-			readeck_only_url=$63,
-			shiori_enabled=$64,
-			shiori_url=$65,
-			shiori_username=$66,
-			shiori_password=$67,
-			shaarli_enabled=$68,
-			shaarli_url=$69,
-			shaarli_api_secret=$70,
-			webhook_enabled=$71,
-			webhook_url=$72,
-			webhook_secret=$73,
-			rssbridge_enabled=$74,
-			rssbridge_url=$75,
-			omnivore_enabled=$76,
-			omnivore_api_key=$77,
-			omnivore_url=$78,
-			linkwarden_enabled=$79,
-			linkwarden_url=$80,
-			linkwarden_api_key=$81,
-			raindrop_enabled=$82,
-			raindrop_token=$83,
-			raindrop_collection_id=$84,
-			raindrop_tags=$85,
-			betula_enabled=$86,
-			betula_url=$87,
-			betula_token=$88,
-			ntfy_enabled=$89,
-			ntfy_topic=$90,
-			ntfy_url=$91,
-			ntfy_api_token=$92,
-			ntfy_username=$93,
-			ntfy_password=$94,
-			ntfy_icon_url=$95,
-			ntfy_internal_links=$96,
-			cubox_enabled=$97,
-			cubox_api_link=$98,
-			discord_enabled=$99,
-			discord_webhook_link=$100,
-			slack_enabled=$101,
-			slack_webhook_link=$102,
-			pushover_enabled=$103,
-			pushover_user=$104,
-			pushover_token=$105,
-			pushover_device=$106,
-			pushover_prefix=$107,
-			rssbridge_token=$108,
-			karakeep_enabled=$109,
-			karakeep_api_key=$110,
-			karakeep_url=$111
+			pinboard_enabled=?,
+			pinboard_token=?,
+			pinboard_tags=?,
+			pinboard_mark_as_unread=?,
+			instapaper_enabled=?,
+			instapaper_username=?,
+			instapaper_password=?,
+			fever_enabled=?,
+			fever_username=?,
+			fever_token=?,
+			wallabag_enabled=?,
+			wallabag_only_url=?,
+			wallabag_url=?,
+			wallabag_client_id=?,
+			wallabag_client_secret=?,
+			wallabag_username=?,
+			wallabag_password=?,
+			nunux_keeper_enabled=?,
+			nunux_keeper_url=?,
+			nunux_keeper_api_key=?,
+			googlereader_enabled=?,
+			googlereader_username=?,
+			googlereader_password=?,
+			telegram_bot_enabled=?,
+			telegram_bot_token=?,
+			telegram_bot_chat_id=?,
+			telegram_bot_topic_id=?,
+			telegram_bot_disable_web_page_preview=?,
+			telegram_bot_disable_notification=?,
+			telegram_bot_disable_buttons=?,
+			espial_enabled=?,
+			espial_url=?,
+			espial_api_key=?,
+			espial_tags=?,
+			linkace_enabled=?,
+			linkace_url=?,
+			linkace_api_key=?,
+			linkace_tags=?,
+			linkace_is_private=?,
+			linkace_check_disabled=?,
+			linkding_enabled=?,
+			linkding_url=?,
+			linkding_api_key=?,
+			linkding_tags=?,
+			linkding_mark_as_unread=?,
+			matrix_bot_enabled=?,
+			matrix_bot_user=?,
+			matrix_bot_password=?,
+			matrix_bot_url=?,
+			matrix_bot_chat_id=?,
+			notion_enabled=?,
+			notion_token=?,
+			notion_page_id=?,
+			readwise_enabled=?,
+			readwise_api_key=?,
+			apprise_enabled=?,
+			apprise_url=?,
+			apprise_services_url=?,
+			readeck_enabled=?,
+			readeck_url=?,
+			readeck_api_key=?,
+			readeck_labels=?,
+			readeck_only_url=?,
+			shiori_enabled=?,
+			shiori_url=?,
+			shiori_username=?,
+			shiori_password=?,
+			shaarli_enabled=?,
+			shaarli_url=?,
+			shaarli_api_secret=?,
+			webhook_enabled=?,
+			webhook_url=?,
+			webhook_secret=?,
+			rssbridge_enabled=?,
+			rssbridge_url=?,
+			omnivore_enabled=?,
+			omnivore_api_key=?,
+			omnivore_url=?,
+			linkwarden_enabled=?,
+			linkwarden_url=?,
+			linkwarden_api_key=?,
+			raindrop_enabled=?,
+			raindrop_token=?,
+			raindrop_collection_id=?,
+			raindrop_tags=?,
+			betula_enabled=?,
+			betula_url=?,
+			betula_token=?,
+			ntfy_enabled=?,
+			ntfy_topic=?,
+			ntfy_url=?,
+			ntfy_api_token=?,
+			ntfy_username=?,
+			ntfy_password=?,
+			ntfy_icon_url=?,
+			ntfy_internal_links=?,
+			cubox_enabled=?,
+			cubox_api_link=?,
+			discord_enabled=?,
+			discord_webhook_link=?,
+			slack_enabled=?,
+			slack_webhook_link=?,
+			pushover_enabled=?,
+			pushover_user=?,
+			pushover_token=?,
+			pushover_device=?,
+			pushover_prefix=?,
+			rssbridge_token=?,
+			karakeep_enabled=?,
+			karakeep_api_key=?,
+			karakeep_url=?
 		WHERE
-			user_id=$112
+			user_id=?
 	`
 	_, err := s.db.Exec(
 		query,
@@ -602,31 +602,31 @@ func (s *Storage) HasSaveEntry(userID int64) (result bool) {
 		FROM
 			integrations
 		WHERE
-			user_id=$1
+			user_id=?
 		AND
 			(
-				pinboard_enabled='t' OR
-				instapaper_enabled='t' OR
-				wallabag_enabled='t' OR
-				notion_enabled='t' OR
-				nunux_keeper_enabled='t' OR
-				espial_enabled='t' OR
-				readwise_enabled='t' OR
-				linkace_enabled='t' OR
-				linkding_enabled='t' OR
-				linkwarden_enabled='t' OR
-				apprise_enabled='t' OR
-				shiori_enabled='t' OR
-				readeck_enabled='t' OR
-				shaarli_enabled='t' OR
-				webhook_enabled='t' OR
-				omnivore_enabled='t' OR
-				karakeep_enabled='t' OR
-				raindrop_enabled='t' OR
-				betula_enabled='t' OR
-				cubox_enabled='t' OR
-				discord_enabled='t' OR
-				slack_enabled='t'
+				pinboard_enabled=1 OR
+				instapaper_enabled=1 OR
+				wallabag_enabled=1 OR
+				notion_enabled=1 OR
+				nunux_keeper_enabled=1 OR
+				espial_enabled=1 OR
+				readwise_enabled=1 OR
+				linkace_enabled=1 OR
+				linkding_enabled=1 OR
+				linkwarden_enabled=1 OR
+				apprise_enabled=1 OR
+				shiori_enabled=1 OR
+				readeck_enabled=1 OR
+				shaarli_enabled=1 OR
+				webhook_enabled=1 OR
+				omnivore_enabled=1 OR
+				karakeep_enabled=1 OR
+				raindrop_enabled=1 OR
+				betula_enabled=1 OR
+				cubox_enabled=1 OR
+				discord_enabled=1 OR
+				slack_enabled=1
 			)
 	`
 	if err := s.db.QueryRow(query, userID).Scan(&result); err != nil {

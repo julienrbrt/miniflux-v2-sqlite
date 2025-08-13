@@ -58,11 +58,11 @@ func (s *Storage) UpdateAppSessionField(sessionID, field string, value any) erro
 		UPDATE
 			sessions
 		SET
-			data = jsonb_set(data, '{%s}', to_jsonb($1::text), true)
+			data = json_set(data, '$.' || ?, json(?))
 		WHERE
-			id=$2
+			id=?
 	`
-	_, err := s.db.Exec(fmt.Sprintf(query, field), value, sessionID)
+	_, err := s.db.Exec(query, field, value, sessionID)
 	if err != nil {
 		return fmt.Errorf(`store: unable to update session field: %v`, err)
 	}
@@ -75,11 +75,11 @@ func (s *Storage) UpdateAppSessionObjectField(sessionID, field string, value any
 		UPDATE
 			sessions
 		SET
-			data = jsonb_set(data, '{%s}', $1, true)
+			data = json_set(data, '$.' || ?, ?)
 		WHERE
-			id=$2
+			id=?
 	`
-	_, err := s.db.Exec(fmt.Sprintf(query, field), value, sessionID)
+	_, err := s.db.Exec(query, field, value, sessionID)
 	if err != nil {
 		return fmt.Errorf(`store: unable to update session field: %v`, err)
 	}
@@ -91,7 +91,7 @@ func (s *Storage) UpdateAppSessionObjectField(sessionID, field string, value any
 func (s *Storage) AppSession(id string) (*model.Session, error) {
 	var session model.Session
 
-	query := "SELECT id, data FROM sessions WHERE id=$1"
+	query := "SELECT id, data FROM sessions WHERE id=?"
 	err := s.db.QueryRow(query, id).Scan(
 		&session.ID,
 		&session.Data,
@@ -128,9 +128,9 @@ func (s *Storage) CleanOldSessions(days int) int64 {
 		DELETE FROM
 			sessions
 		WHERE
-			created_at < now() - $1::interval
+			created_at < datetime('now', '-' || ? || ' days')
 	`
-	result, err := s.db.Exec(query, fmt.Sprintf("%d days", days))
+	result, err := s.db.Exec(query, days)
 	if err != nil {
 		return 0
 	}

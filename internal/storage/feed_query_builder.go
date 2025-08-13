@@ -32,18 +32,18 @@ func NewFeedQueryBuilder(store *Storage, userID int64) *FeedQueryBuilder {
 	return &FeedQueryBuilder{
 		store:             store,
 		args:              []any{userID},
-		conditions:        []string{"f.user_id = $1"},
+		conditions:        []string{"f.user_id = ?"},
 		counterArgs:       []any{userID, model.EntryStatusRead, model.EntryStatusUnread},
-		counterConditions: []string{"e.user_id = $1", "e.status IN ($2, $3)"},
+		counterConditions: []string{"e.user_id = ?", "e.status IN (?, ?)"},
 	}
 }
 
 // WithCategoryID filter by category ID.
 func (f *FeedQueryBuilder) WithCategoryID(categoryID int64) *FeedQueryBuilder {
 	if categoryID > 0 {
-		f.conditions = append(f.conditions, "f.category_id = $"+strconv.Itoa(len(f.args)+1))
+		f.conditions = append(f.conditions, "f.category_id = ?")
 		f.args = append(f.args, categoryID)
-		f.counterConditions = append(f.counterConditions, "f.category_id = $"+strconv.Itoa(len(f.counterArgs)+1))
+		f.counterConditions = append(f.counterConditions, "f.category_id = ?")
 		f.counterArgs = append(f.counterArgs, categoryID)
 		f.counterJoinFeeds = true
 	}
@@ -53,7 +53,7 @@ func (f *FeedQueryBuilder) WithCategoryID(categoryID int64) *FeedQueryBuilder {
 // WithFeedID filter by feed ID.
 func (f *FeedQueryBuilder) WithFeedID(feedID int64) *FeedQueryBuilder {
 	if feedID > 0 {
-		f.conditions = append(f.conditions, "f.id = $"+strconv.Itoa(len(f.args)+1))
+		f.conditions = append(f.conditions, "f.id = ?")
 		f.args = append(f.args, feedID)
 	}
 	return f
@@ -100,6 +100,8 @@ func (f *FeedQueryBuilder) buildSorting() string {
 
 	if len(parts) > 0 {
 		parts += ", lower(f.title) ASC"
+	} else {
+		parts = " ORDER BY lower(f.title) ASC"
 	}
 
 	if f.limit > 0 {
@@ -210,6 +212,9 @@ func (f *FeedQueryBuilder) GetFeeds() (model.Feeds, error) {
 		var iconID sql.NullInt64
 		var externalIconID sql.NullString
 		var tz string
+		var crawlerInt, disabledInt, noMediaPlayerInt, hideGloballyInt int
+		var categoryHideGloballyInt, ignoreHTTPCacheInt, allowSelfSignedInt, fetchViaProxyInt int
+		var ntfyEnabledInt, pushoverEnabledInt, disableHTTP2Int int
 		feed.Category = &model.Category{}
 
 		err := rows.Scan(
@@ -232,30 +237,30 @@ func (f *FeedQueryBuilder) GetFeeds() (model.Feeds, error) {
 			&feed.KeeplistRules,
 			&feed.BlockFilterEntryRules,
 			&feed.KeepFilterEntryRules,
-			&feed.Crawler,
+			&crawlerInt,
 			&feed.UserAgent,
 			&feed.Cookie,
 			&feed.Username,
 			&feed.Password,
-			&feed.IgnoreHTTPCache,
-			&feed.AllowSelfSignedCertificates,
-			&feed.FetchViaProxy,
-			&feed.Disabled,
-			&feed.NoMediaPlayer,
-			&feed.HideGlobally,
+			&ignoreHTTPCacheInt,
+			&allowSelfSignedInt,
+			&fetchViaProxyInt,
+			&disabledInt,
+			&noMediaPlayerInt,
+			&hideGloballyInt,
 			&feed.Category.ID,
 			&feed.Category.Title,
-			&feed.Category.HideGlobally,
+			&categoryHideGloballyInt,
 			&iconID,
 			&externalIconID,
 			&tz,
 			&feed.AppriseServiceURLs,
 			&feed.WebhookURL,
-			&feed.DisableHTTP2,
-			&feed.NtfyEnabled,
+			&disableHTTP2Int,
+			&ntfyEnabledInt,
 			&feed.NtfyPriority,
 			&feed.NtfyTopic,
-			&feed.PushoverEnabled,
+			&pushoverEnabledInt,
 			&feed.PushoverPriority,
 			&feed.ProxyURL,
 		)
@@ -263,6 +268,19 @@ func (f *FeedQueryBuilder) GetFeeds() (model.Feeds, error) {
 		if err != nil {
 			return nil, fmt.Errorf(`store: unable to fetch feeds row: %w`, err)
 		}
+
+		// Convert integer booleans to Go booleans
+		feed.Crawler = crawlerInt == 1
+		feed.Disabled = disabledInt == 1
+		feed.NoMediaPlayer = noMediaPlayerInt == 1
+		feed.HideGlobally = hideGloballyInt == 1
+		feed.Category.HideGlobally = categoryHideGloballyInt == 1
+		feed.IgnoreHTTPCache = ignoreHTTPCacheInt == 1
+		feed.AllowSelfSignedCertificates = allowSelfSignedInt == 1
+		feed.FetchViaProxy = fetchViaProxyInt == 1
+		feed.NtfyEnabled = ntfyEnabledInt == 1
+		feed.PushoverEnabled = pushoverEnabledInt == 1
+		feed.DisableHTTP2 = disableHTTP2Int == 1
 
 		if iconID.Valid && externalIconID.Valid {
 			feed.Icon = &model.FeedIcon{FeedID: feed.ID, IconID: iconID.Int64, ExternalIconID: externalIconID.String}

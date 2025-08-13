@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"encoding/json"
 
 	"miniflux.app/v2/internal/model"
 	"miniflux.app/v2/internal/timezone"
@@ -33,18 +33,17 @@ func (e *EntryQueryBuilder) WithEnclosures() *EntryQueryBuilder {
 	return e
 }
 
-// WithSearchQuery adds full-text search query to the condition.
+// WithSearchQuery adds basic text search query to the condition.
+// SQLite doesn't have built-in full-text search like PostgreSQL, so we use LIKE.
 func (e *EntryQueryBuilder) WithSearchQuery(query string) *EntryQueryBuilder {
 	if query != "" {
 		nArgs := len(e.args) + 1
-		e.conditions = append(e.conditions, fmt.Sprintf("e.document_vectors @@ plainto_tsquery($%d)", nArgs))
-		e.args = append(e.args, query)
+		e.conditions = append(e.conditions, fmt.Sprintf("(e.title LIKE $%d OR e.content LIKE $%d)", nArgs, nArgs))
+		e.args = append(e.args, "%"+query+"%")
 
-		// 0.0000001 = 0.1 / (seconds_in_a_day)
-		e.WithSorting(
-			fmt.Sprintf("ts_rank(document_vectors, plainto_tsquery($%d)) - extract (epoch from now() - published_at)::float * 0.0000001", nArgs),
-			"DESC",
-		)
+		// Sort by relevance (title matches first, then by date)
+		e.WithSorting("CASE WHEN e.title LIKE $"+strconv.Itoa(nArgs)+" THEN 1 ELSE 2 END", "ASC")
+		e.WithSorting("e.published_at", "DESC")
 	}
 	return e
 }
@@ -52,9 +51,9 @@ func (e *EntryQueryBuilder) WithSearchQuery(query string) *EntryQueryBuilder {
 // WithStarred adds starred filter.
 func (e *EntryQueryBuilder) WithStarred(starred bool) *EntryQueryBuilder {
 	if starred {
-		e.conditions = append(e.conditions, "e.starred is true")
+		e.conditions = append(e.conditions, "e.starred = 1")
 	} else {
-		e.conditions = append(e.conditions, "e.starred is false")
+		e.conditions = append(e.conditions, "e.starred = 0")
 	}
 	return e
 }
@@ -107,8 +106,14 @@ func (e *EntryQueryBuilder) AfterEntryID(entryID int64) *EntryQueryBuilder {
 
 // WithEntryIDs filter by entry IDs.
 func (e *EntryQueryBuilder) WithEntryIDs(entryIDs []int64) *EntryQueryBuilder {
-	e.conditions = append(e.conditions, fmt.Sprintf("e.id = ANY($%d)", len(e.args)+1))
-	e.args = append(e.args, pq.Int64Array(entryIDs))
+	if len(entryIDs) > 0 {
+		placeholders := make([]string, len(entryIDs))
+		for i, id := range entryIDs {
+			placeholders[i] = "$" + strconv.Itoa(len(e.args)+1)
+			e.args = append(e.args, id)
+		}
+		e.conditions = append(e.conditions, fmt.Sprintf("e.id IN (%s)", strings.Join(placeholders, ",")))
+	}
 	return e
 }
 
@@ -151,8 +156,12 @@ func (e *EntryQueryBuilder) WithStatus(status string) *EntryQueryBuilder {
 // WithStatuses filter by a list of entry statuses.
 func (e *EntryQueryBuilder) WithStatuses(statuses []string) *EntryQueryBuilder {
 	if len(statuses) > 0 {
-		e.conditions = append(e.conditions, fmt.Sprintf("e.status = ANY($%d)", len(e.args)+1))
-		e.args = append(e.args, pq.StringArray(statuses))
+		placeholders := make([]string, len(statuses))
+		for i, status := range statuses {
+			placeholders[i] = "$" + strconv.Itoa(len(e.args)+1)
+			e.args = append(e.args, status)
+		}
+		e.conditions = append(e.conditions, fmt.Sprintf("e.status IN (%s)", strings.Join(placeholders, ",")))
 	}
 	return e
 }
@@ -160,9 +169,9 @@ func (e *EntryQueryBuilder) WithStatuses(statuses []string) *EntryQueryBuilder {
 // WithTags filter by a list of entry tags.
 func (e *EntryQueryBuilder) WithTags(tags []string) *EntryQueryBuilder {
 	if len(tags) > 0 {
-		for _, cat := range tags {
-			e.conditions = append(e.conditions, fmt.Sprintf("LOWER($%d) = ANY(LOWER(e.tags::text)::text[])", len(e.args)+1))
-			e.args = append(e.args, cat)
+		for _, tag := range tags {
+			e.conditions = append(e.conditions, fmt.Sprintf("e.tags LIKE $%d", len(e.args)+1))
+			e.args = append(e.args, "%\""+strings.ToLower(tag)+"\"%")
 		}
 	}
 	return e
@@ -213,8 +222,8 @@ func (e *EntryQueryBuilder) WithOffset(offset int) *EntryQueryBuilder {
 }
 
 func (e *EntryQueryBuilder) WithGloballyVisible() *EntryQueryBuilder {
-	e.conditions = append(e.conditions, "c.hide_globally IS FALSE")
-	e.conditions = append(e.conditions, "f.hide_globally IS FALSE")
+	e.conditions = append(e.conditions, "c.hide_globally = 0")
+	e.conditions = append(e.conditions, "f.hide_globally = 0")
 	return e
 }
 
@@ -323,6 +332,7 @@ func (e *EntryQueryBuilder) GetEntries() (model.Entries, error) {
 		var iconID sql.NullInt64
 		var externalIconID sql.NullString
 		var tz string
+		var tagsJSON string
 
 		entry := model.NewEntry()
 
@@ -343,7 +353,7 @@ func (e *EntryQueryBuilder) GetEntries() (model.Entries, error) {
 			&entry.ReadingTime,
 			&entry.CreatedAt,
 			&entry.ChangedAt,
-			pq.Array(&entry.Tags),
+			&tagsJSON,
 			&entry.Feed.Title,
 			&entry.Feed.FeedURL,
 			&entry.Feed.SiteURL,
@@ -367,6 +377,15 @@ func (e *EntryQueryBuilder) GetEntries() (model.Entries, error) {
 
 		if err != nil {
 			return nil, fmt.Errorf("store: unable to fetch entry row: %v", err)
+		}
+
+		// Parse tags from JSON
+		if tagsJSON != "" {
+			if err := json.Unmarshal([]byte(tagsJSON), &entry.Tags); err != nil {
+				entry.Tags = []string{}
+			}
+		} else {
+			entry.Tags = []string{}
 		}
 
 		if iconID.Valid && externalIconID.Valid && externalIconID.String != "" {

@@ -9,8 +9,6 @@ import (
 	"strings"
 
 	"miniflux.app/v2/internal/model"
-
-	"github.com/lib/pq"
 )
 
 // GetEnclosures returns all attachments for the given entry.
@@ -77,7 +75,35 @@ func (s *Storage) GetEnclosuresForEntries(entryIDs []int64) (map[int64]model.Enc
 		ORDER BY id ASC
 	`
 
-	rows, err := s.db.Query(query, pq.Array(entryIDs))
+	// Convert entryIDs to placeholders for SQLite
+	if len(entryIDs) == 0 {
+		return make(map[int64]model.EnclosureList), nil
+	}
+
+	placeholders := make([]string, len(entryIDs))
+	args := make([]interface{}, len(entryIDs))
+	for i, id := range entryIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query = fmt.Sprintf(`
+		SELECT
+			id,
+			user_id,
+			entry_id,
+			url,
+			size,
+			mime_type,
+		    media_progression
+		FROM
+			enclosures
+		WHERE
+			entry_id IN (%s)
+		ORDER BY id ASC
+	`, strings.Join(placeholders, ","))
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: unable to fetch enclosures: %w", err)
 	}
@@ -155,7 +181,7 @@ func (s *Storage) createEnclosure(tx *sql.Tx, enclosure *model.Enclosure) error 
 			(url, size, mime_type, entry_id, user_id, media_progression)
 		VALUES
 			($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (user_id, entry_id, md5(url)) DO NOTHING
+		ON CONFLICT (user_id, entry_id, url) DO NOTHING
 		RETURNING
 			id
 	`
@@ -192,12 +218,37 @@ func (s *Storage) updateEnclosures(tx *sql.Tx, entry *model.Entry) error {
 		DELETE FROM
 			enclosures
 		WHERE
-			user_id=$1 AND entry_id=$2 AND url <> ALL($3)
+			user_id=? AND entry_id=? AND url NOT IN (%s)
 	`
 
-	_, err := tx.Exec(query, entry.UserID, entry.ID, pq.Array(sqlValues))
-	if err != nil {
-		return fmt.Errorf(`store: unable to delete old enclosures: %v`, err)
+	if len(sqlValues) > 0 {
+		placeholders := make([]string, len(sqlValues))
+		args := make([]interface{}, len(sqlValues)+2)
+		args[0] = entry.UserID
+		args[1] = entry.ID
+
+		for i, url := range sqlValues {
+			placeholders[i] = "?"
+			args[i+2] = url
+		}
+
+		query = fmt.Sprintf(`
+			DELETE FROM
+				enclosures
+			WHERE
+				user_id=? AND entry_id=? AND url NOT IN (%s)
+		`, strings.Join(placeholders, ","))
+
+		_, err := tx.Exec(query, args...)
+		if err != nil {
+			return fmt.Errorf(`store: unable to delete old enclosures: %v`, err)
+		}
+	} else {
+		// If no enclosures, delete all for this entry
+		_, err := tx.Exec(`DELETE FROM enclosures WHERE user_id=? AND entry_id=?`, entry.UserID, entry.ID)
+		if err != nil {
+			return fmt.Errorf(`store: unable to delete old enclosures: %v`, err)
+		}
 	}
 
 	return nil
