@@ -15,7 +15,7 @@ import (
 // HasFeedIcon checks if the given feed has an icon.
 func (s *Storage) HasFeedIcon(feedID int64) bool {
 	var result bool
-	query := `SELECT true FROM feed_icons WHERE feed_id=$1 LIMIT 1`
+	query := `SELECT true FROM feed_icons WHERE feed_id=? LIMIT 1`
 	s.db.QueryRow(query, feedID).Scan(&result)
 	return result
 }
@@ -31,7 +31,7 @@ func (s *Storage) IconByID(iconID int64) (*model.Icon, error) {
 			content,
 			external_id
 		FROM icons
-		WHERE id=$1`
+		WHERE id=?`
 	err := s.db.QueryRow(query, iconID).Scan(&icon.ID, &icon.Hash, &icon.MimeType, &icon.Content, &icon.ExternalID)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -53,7 +53,7 @@ func (s *Storage) IconByExternalID(externalIconID string) (*model.Icon, error) {
 			content,
 			external_id
 		FROM icons
-		WHERE external_id=$1
+		WHERE external_id=?
 	`
 	err := s.db.QueryRow(query, externalIconID).Scan(&icon.ID, &icon.Hash, &icon.MimeType, &icon.Content, &icon.ExternalID)
 	if err == sql.ErrNoRows {
@@ -78,7 +78,7 @@ func (s *Storage) IconByFeedID(userID, feedID int64) (*model.Icon, error) {
 		LEFT JOIN feed_icons ON feed_icons.icon_id=icons.id
 		LEFT JOIN feeds ON feeds.id=feed_icons.feed_id
 		WHERE
-			feeds.user_id=$1 AND feeds.id=$2
+			feeds.user_id=? AND feeds.id=?
 		LIMIT 1
 	`
 	var icon model.Icon
@@ -97,38 +97,43 @@ func (s *Storage) StoreFeedIcon(feedID int64, icon *model.Icon) error {
 		return fmt.Errorf(`store: unable to start transaction: %v`, err)
 	}
 
-	if err := tx.QueryRow(`SELECT id FROM icons WHERE hash=$1`, icon.Hash).Scan(&icon.ID); err == sql.ErrNoRows {
+	if err := tx.QueryRow(`SELECT id FROM icons WHERE hash=?`, icon.Hash).Scan(&icon.ID); err == sql.ErrNoRows {
 		query := `
 			INSERT INTO icons
 				(hash, mime_type, content, external_id)
 			VALUES
-				($1, $2, $3, $4)
-			RETURNING
-				id
+				(?, ?, ?, ?)
 		`
-		err := tx.QueryRow(
+		result, err := tx.Exec(
 			query,
 			icon.Hash,
 			normalizeMimeType(icon.MimeType),
 			icon.Content,
 			crypto.GenerateRandomStringHex(20),
-		).Scan(&icon.ID)
+		)
 
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf(`store: unable to create icon: %v`, err)
 		}
+
+		id, err := result.LastInsertId()
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf(`store: unable to get icon ID: %v`, err)
+		}
+		icon.ID = id
 	} else if err != nil {
 		tx.Rollback()
 		return fmt.Errorf(`store: unable to fetch icon by hash %q: %v`, icon.Hash, err)
 	}
 
-	if _, err := tx.Exec(`DELETE FROM feed_icons WHERE feed_id=$1`, feedID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM feed_icons WHERE feed_id=?`, feedID); err != nil {
 		tx.Rollback()
 		return fmt.Errorf(`store: unable to delete feed icon: %v`, err)
 	}
 
-	if _, err := tx.Exec(`INSERT INTO feed_icons (feed_id, icon_id) VALUES ($1, $2)`, feedID, icon.ID); err != nil {
+	if _, err := tx.Exec(`INSERT INTO feed_icons (feed_id, icon_id) VALUES (?, ?)`, feedID, icon.ID); err != nil {
 		tx.Rollback()
 		return fmt.Errorf(`store: unable to associate feed and icon: %v`, err)
 	}
@@ -153,7 +158,7 @@ func (s *Storage) Icons(userID int64) (model.Icons, error) {
 		LEFT JOIN feed_icons ON feed_icons.icon_id=icons.id
 		LEFT JOIN feeds ON feeds.id=feed_icons.feed_id
 		WHERE
-			feeds.user_id=$1
+			feeds.user_id=?
 	`
 	rows, err := s.db.Query(query, userID)
 	if err != nil {

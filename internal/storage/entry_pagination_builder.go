@@ -22,17 +22,17 @@ type EntryPaginationBuilder struct {
 	direction  string
 }
 
-// WithSearchQuery adds full-text search query to the condition.
+// WithSearchQuery adds basic text search query to the condition.
 func (e *EntryPaginationBuilder) WithSearchQuery(query string) {
 	if query != "" {
-		e.conditions = append(e.conditions, fmt.Sprintf("e.document_vectors @@ plainto_tsquery($%d)", len(e.args)+1))
-		e.args = append(e.args, query)
+		e.conditions = append(e.conditions, fmt.Sprintf("(e.title LIKE $%d OR e.content LIKE $%d)", len(e.args)+1, len(e.args)+1))
+		e.args = append(e.args, "%"+query+"%")
 	}
 }
 
 // WithStarred adds starred to the condition.
 func (e *EntryPaginationBuilder) WithStarred() {
-	e.conditions = append(e.conditions, "e.starred is true")
+	e.conditions = append(e.conditions, "e.starred = 1")
 }
 
 // WithFeedID adds feed_id to the condition.
@@ -62,16 +62,16 @@ func (e *EntryPaginationBuilder) WithStatus(status string) {
 func (e *EntryPaginationBuilder) WithTags(tags []string) {
 	if len(tags) > 0 {
 		for _, tag := range tags {
-			e.conditions = append(e.conditions, fmt.Sprintf("LOWER($%d) = ANY(LOWER(e.tags::text)::text[])", len(e.args)+1))
-			e.args = append(e.args, tag)
+			e.conditions = append(e.conditions, fmt.Sprintf("e.tags LIKE $%d", len(e.args)+1))
+			e.args = append(e.args, "%\""+strings.ToLower(tag)+"\"%")
 		}
 	}
 }
 
 // WithGloballyVisible adds global visibility to the condition.
 func (e *EntryPaginationBuilder) WithGloballyVisible() {
-	e.conditions = append(e.conditions, "not c.hide_globally")
-	e.conditions = append(e.conditions, "not f.hide_globally")
+	e.conditions = append(e.conditions, "c.hide_globally = 0")
+	e.conditions = append(e.conditions, "f.hide_globally = 0")
 }
 
 // Entries returns previous and next entries.
@@ -109,33 +109,45 @@ func (e *EntryPaginationBuilder) Entries() (*model.Entry, *model.Entry, error) {
 }
 
 func (e *EntryPaginationBuilder) getPrevNextID(tx *sql.Tx) (prevID int64, nextID int64, err error) {
-	cte := `
-		WITH entry_pagination AS (
-			SELECT
-				e.id,
-				lag(e.id) over (order by e.%[1]s asc, e.created_at asc, e.id desc) as prev_id,
-				lead(e.id) over (order by e.%[1]s asc, e.created_at asc, e.id desc) as next_id
-			FROM entries AS e
-			JOIN feeds AS f ON f.id=e.feed_id
-			JOIN categories c ON c.id = f.category_id
-			WHERE %[2]s
-			ORDER BY e.%[1]s asc, e.created_at asc, e.id desc
-		)
-		SELECT prev_id, next_id FROM entry_pagination AS ep WHERE %[3]s;
-	`
-
+	// SQLite doesn't have window functions in older versions, so we'll use subqueries
 	subCondition := strings.Join(e.conditions, " AND ")
-	finalCondition := "ep.id = $" + strconv.Itoa(len(e.args)+1)
-	query := fmt.Sprintf(cte, e.order, subCondition, finalCondition)
-	e.args = append(e.args, e.entryID)
+
+	// Get previous entry ID
+	prevQuery := fmt.Sprintf(`
+		SELECT e.id
+		FROM entries AS e
+		JOIN feeds AS f ON f.id=e.feed_id
+		JOIN categories c ON c.id = f.category_id
+		WHERE %s AND (e.%s < (SELECT %s FROM entries WHERE id = ?) OR (e.%s = (SELECT %s FROM entries WHERE id = ?) AND e.id > ?))
+		ORDER BY e.%s DESC, e.created_at DESC, e.id ASC
+		LIMIT 1
+	`, subCondition, e.order, e.order, e.order, e.order, e.order)
+
+	// Get next entry ID
+	nextQuery := fmt.Sprintf(`
+		SELECT e.id
+		FROM entries AS e
+		JOIN feeds AS f ON f.id=e.feed_id
+		JOIN categories c ON c.id = f.category_id
+		WHERE %s AND (e.%s > (SELECT %s FROM entries WHERE id = ?) OR (e.%s = (SELECT %s FROM entries WHERE id = ?) AND e.id < ?))
+		ORDER BY e.%s ASC, e.created_at ASC, e.id DESC
+		LIMIT 1
+	`, subCondition, e.order, e.order, e.order, e.order, e.order)
+
+	args := append(e.args, e.entryID, e.entryID, e.entryID)
 
 	var pID, nID sql.NullInt64
-	err = tx.QueryRow(query, e.args...).Scan(&pID, &nID)
-	switch {
-	case err == sql.ErrNoRows:
-		return 0, 0, nil
-	case err != nil:
-		return 0, 0, fmt.Errorf("entry pagination: %v", err)
+
+	// Get previous ID
+	err = tx.QueryRow(prevQuery, args...).Scan(&pID)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, 0, fmt.Errorf("entry pagination prev: %v", err)
+	}
+
+	// Get next ID
+	err = tx.QueryRow(nextQuery, args...).Scan(&nID)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, 0, fmt.Errorf("entry pagination next: %v", err)
 	}
 
 	if pID.Valid {
@@ -152,7 +164,7 @@ func (e *EntryPaginationBuilder) getPrevNextID(tx *sql.Tx) (prevID int64, nextID
 func (e *EntryPaginationBuilder) getEntry(tx *sql.Tx, entryID int64) (*model.Entry, error) {
 	var entry model.Entry
 
-	err := tx.QueryRow(`SELECT id, title FROM entries WHERE id = $1`, entryID).Scan(
+	err := tx.QueryRow(`SELECT id, title FROM entries WHERE id = ?`, entryID).Scan(
 		&entry.ID,
 		&entry.Title,
 	)
@@ -172,7 +184,7 @@ func NewEntryPaginationBuilder(store *Storage, userID, entryID int64, order, dir
 	return &EntryPaginationBuilder{
 		store:      store,
 		args:       []any{userID, "removed"},
-		conditions: []string{"e.user_id = $1", "e.status <> $2"},
+		conditions: []string{"e.user_id = ?", "e.status <> ?"},
 		entryID:    entryID,
 		order:      order,
 		direction:  direction,

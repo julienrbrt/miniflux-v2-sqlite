@@ -34,32 +34,32 @@ func (b *BatchBuilder) WithBatchSize(batchSize int) *BatchBuilder {
 }
 
 func (b *BatchBuilder) WithUserID(userID int64) *BatchBuilder {
-	b.conditions = append(b.conditions, "user_id = $"+strconv.Itoa(len(b.args)+1))
+	b.conditions = append(b.conditions, "user_id = ?")
 	b.args = append(b.args, userID)
 	return b
 }
 
 func (b *BatchBuilder) WithCategoryID(categoryID int64) *BatchBuilder {
-	b.conditions = append(b.conditions, "category_id = $"+strconv.Itoa(len(b.args)+1))
+	b.conditions = append(b.conditions, "category_id = ?")
 	b.args = append(b.args, categoryID)
 	return b
 }
 
 func (b *BatchBuilder) WithErrorLimit(limit int) *BatchBuilder {
 	if limit > 0 {
-		b.conditions = append(b.conditions, "parsing_error_count < $"+strconv.Itoa(len(b.args)+1))
+		b.conditions = append(b.conditions, "parsing_error_count < ?")
 		b.args = append(b.args, limit)
 	}
 	return b
 }
 
 func (b *BatchBuilder) WithNextCheckExpired() *BatchBuilder {
-	b.conditions = append(b.conditions, "next_check_at < now()")
+	b.conditions = append(b.conditions, "next_check_at < datetime('now')")
 	return b
 }
 
 func (b *BatchBuilder) WithoutDisabledFeeds() *BatchBuilder {
-	b.conditions = append(b.conditions, "disabled IS false")
+	b.conditions = append(b.conditions, "disabled = 0")
 	return b
 }
 

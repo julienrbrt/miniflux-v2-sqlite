@@ -13,7 +13,6 @@ import (
 	"miniflux.app/v2/internal/crypto"
 	"miniflux.app/v2/internal/model"
 
-	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -30,7 +29,7 @@ func (s *Storage) CountUsers() int {
 
 // SetLastLogin updates the last login date of a user.
 func (s *Storage) SetLastLogin(userID int64) error {
-	query := `UPDATE users SET last_login_at=now() WHERE id=$1`
+	query := `UPDATE users SET last_login_at=datetime('now') WHERE id=?`
 	_, err := s.db.Exec(query, userID)
 	if err != nil {
 		return fmt.Errorf(`store: unable to update last login date: %v`, err)
@@ -42,14 +41,14 @@ func (s *Storage) SetLastLogin(userID int64) error {
 // UserExists checks if a user exists by using the given username.
 func (s *Storage) UserExists(username string) bool {
 	var result bool
-	s.db.QueryRow(`SELECT true FROM users WHERE username=LOWER($1) LIMIT 1`, username).Scan(&result)
+	s.db.QueryRow(`SELECT true FROM users WHERE username=LOWER(?) LIMIT 1`, username).Scan(&result)
 	return result
 }
 
 // AnotherUserExists checks if another user exists with the given username.
 func (s *Storage) AnotherUserExists(userID int64, username string) bool {
 	var result bool
-	s.db.QueryRow(`SELECT true FROM users WHERE id != $1 AND username=LOWER($2) LIMIT 1`, userID, username).Scan(&result)
+	s.db.QueryRow(`SELECT true FROM users WHERE id != ? AND username=LOWER(?) LIMIT 1`, userID, username).Scan(&result)
 	return result
 }
 
@@ -68,37 +67,7 @@ func (s *Storage) CreateUser(userCreationRequest *model.UserCreationRequest) (*m
 		INSERT INTO users
 			(username, password, is_admin, google_id, openid_connect_id)
 		VALUES
-			(LOWER($1), $2, $3, $4, $5)
-		RETURNING
-			id,
-			username,
-			is_admin,
-			language,
-			theme,
-			timezone,
-			entry_direction,
-			entries_per_page,
-			keyboard_shortcuts,
-			show_reading_time,
-			entry_swipe,
-			gesture_nav,
-			stylesheet,
-			custom_js,
-			external_font_hosts,
-			google_id,
-			openid_connect_id,
-			display_mode,
-			entry_order,
-			default_reading_speed,
-			cjk_reading_speed,
-			default_home_page,
-			categories_sorting_order,
-			mark_read_on_view,
-			media_playback_rate,
-			block_filter_entry_rules,
-			keep_filter_entry_rules,
-			always_open_external_links,
-			open_external_links_in_new_tab
+			(LOWER(?), ?, ?, ?, ?)
 	`
 
 	tx, err := s.db.Begin()
@@ -106,15 +75,36 @@ func (s *Storage) CreateUser(userCreationRequest *model.UserCreationRequest) (*m
 		return nil, fmt.Errorf(`store: unable to start transaction: %v`, err)
 	}
 
-	var user model.User
-	err = tx.QueryRow(
+	result, err := tx.Exec(
 		query,
 		userCreationRequest.Username,
 		hashedPassword,
 		userCreationRequest.IsAdmin,
 		userCreationRequest.GoogleID,
 		userCreationRequest.OpenIDConnectID,
-	).Scan(
+	)
+	if err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf(`store: unable to create user: %v`, err)
+	}
+
+	userID, err := result.LastInsertId()
+	if err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf(`store: unable to get user ID: %v`, err)
+	}
+
+	// Get the created user
+	var user model.User
+	err = tx.QueryRow(`
+		SELECT id, username, is_admin, language, theme, timezone, entry_direction,
+		       entries_per_page, keyboard_shortcuts, show_reading_time, entry_swipe,
+		       gesture_nav, stylesheet, custom_js, external_font_hosts, google_id,
+		       openid_connect_id, display_mode, entry_order, default_reading_speed,
+		       cjk_reading_speed, default_home_page, categories_sorting_order,
+		       mark_read_on_view, media_playback_rate, block_filter_entry_rules,
+		       keep_filter_entry_rules, always_open_external_links, open_external_links_in_new_tab
+		FROM users WHERE id = ?`, userID).Scan(
 		&user.ID,
 		&user.Username,
 		&user.IsAdmin,
@@ -147,16 +137,16 @@ func (s *Storage) CreateUser(userCreationRequest *model.UserCreationRequest) (*m
 	)
 	if err != nil {
 		tx.Rollback()
-		return nil, fmt.Errorf(`store: unable to create user: %v`, err)
+		return nil, fmt.Errorf(`store: unable to fetch created user: %v`, err)
 	}
 
-	_, err = tx.Exec(`INSERT INTO categories (user_id, title) VALUES ($1, $2)`, user.ID, "All")
+	_, err = tx.Exec(`INSERT INTO categories (user_id, title) VALUES (?, ?)`, user.ID, "All")
 	if err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf(`store: unable to create user default category: %v`, err)
 	}
 
-	_, err = tx.Exec(`INSERT INTO integrations (user_id) VALUES ($1)`, user.ID)
+	_, err = tx.Exec(`INSERT INTO integrations (user_id) VALUES (?)`, user.ID)
 	if err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf(`store: unable to create integration row: %v`, err)
@@ -181,38 +171,38 @@ func (s *Storage) UpdateUser(user *model.User) error {
 
 		query := `
 			UPDATE users SET
-				username=LOWER($1),
-				password=$2,
-				is_admin=$3,
-				theme=$4,
-				language=$5,
-				timezone=$6,
-				entry_direction=$7,
-				entries_per_page=$8,
-				keyboard_shortcuts=$9,
-				show_reading_time=$10,
-				entry_swipe=$11,
-				gesture_nav=$12,
-				stylesheet=$13,
-				custom_js=$14,
-				external_font_hosts=$15,
-				google_id=$16,
-				openid_connect_id=$17,
-				display_mode=$18,
-				entry_order=$19,
-				default_reading_speed=$20,
-				cjk_reading_speed=$21,
-				default_home_page=$22,
-				categories_sorting_order=$23,
-				mark_read_on_view=$24,
-				mark_read_on_media_player_completion=$25,
-				media_playback_rate=$26,
-				block_filter_entry_rules=$27,
-				keep_filter_entry_rules=$28,
-				always_open_external_links=$29,
-				open_external_links_in_new_tab=$30
+				username=LOWER(?),
+				password=?,
+				is_admin=?,
+				theme=?,
+				language=?,
+				timezone=?,
+				entry_direction=?,
+				entries_per_page=?,
+				keyboard_shortcuts=?,
+				show_reading_time=?,
+				entry_swipe=?,
+				gesture_nav=?,
+				stylesheet=?,
+				custom_js=?,
+				external_font_hosts=?,
+				google_id=?,
+				openid_connect_id=?,
+				display_mode=?,
+				entry_order=?,
+				default_reading_speed=?,
+				cjk_reading_speed=?,
+				default_home_page=?,
+				categories_sorting_order=?,
+				mark_read_on_view=?,
+				mark_read_on_media_player_completion=?,
+				media_playback_rate=?,
+				block_filter_entry_rules=?,
+				keep_filter_entry_rules=?,
+				always_open_external_links=?,
+				open_external_links_in_new_tab=?
 			WHERE
-				id=$31
+				id=?
 		`
 
 		_, err = s.db.Exec(
@@ -255,37 +245,37 @@ func (s *Storage) UpdateUser(user *model.User) error {
 	} else {
 		query := `
 			UPDATE users SET
-				username=LOWER($1),
-				is_admin=$2,
-				theme=$3,
-				language=$4,
-				timezone=$5,
-				entry_direction=$6,
-				entries_per_page=$7,
-				keyboard_shortcuts=$8,
-				show_reading_time=$9,
-				entry_swipe=$10,
-				gesture_nav=$11,
-				stylesheet=$12,
-				custom_js=$13,
-				external_font_hosts=$14,
-				google_id=$15,
-				openid_connect_id=$16,
-				display_mode=$17,
-				entry_order=$18,
-				default_reading_speed=$19,
-				cjk_reading_speed=$20,
-				default_home_page=$21,
-				categories_sorting_order=$22,
-				mark_read_on_view=$23,
-				mark_read_on_media_player_completion=$24,
-				media_playback_rate=$25,
-				block_filter_entry_rules=$26,
-				keep_filter_entry_rules=$27,
-				always_open_external_links=$28,
-				open_external_links_in_new_tab=$29
+				username=LOWER(?),
+				is_admin=?,
+				theme=?,
+				language=?,
+				timezone=?,
+				entry_direction=?,
+				entries_per_page=?,
+				keyboard_shortcuts=?,
+				show_reading_time=?,
+				entry_swipe=?,
+				gesture_nav=?,
+				stylesheet=?,
+				custom_js=?,
+				external_font_hosts=?,
+				google_id=?,
+				openid_connect_id=?,
+				display_mode=?,
+				entry_order=?,
+				default_reading_speed=?,
+				cjk_reading_speed=?,
+				default_home_page=?,
+				categories_sorting_order=?,
+				mark_read_on_view=?,
+				mark_read_on_media_player_completion=?,
+				media_playback_rate=?,
+				block_filter_entry_rules=?,
+				keep_filter_entry_rules=?,
+				always_open_external_links=?,
+				open_external_links_in_new_tab=?
 			WHERE
-				id=$30
+				id=?
 		`
 
 		_, err := s.db.Exec(
@@ -332,7 +322,7 @@ func (s *Storage) UpdateUser(user *model.User) error {
 
 // UserLanguage returns the language of the given user.
 func (s *Storage) UserLanguage(userID int64) (language string) {
-	err := s.db.QueryRow(`SELECT language FROM users WHERE id = $1`, userID).Scan(&language)
+	err := s.db.QueryRow(`SELECT language FROM users WHERE id = ?`, userID).Scan(&language)
 	if err != nil {
 		return "en_US"
 	}
@@ -378,7 +368,7 @@ func (s *Storage) UserByID(userID int64) (*model.User, error) {
 		FROM
 			users
 		WHERE
-			id = $1
+			id = ?
 	`
 	return s.fetchUser(query, userID)
 }
@@ -421,7 +411,7 @@ func (s *Storage) UserByUsername(username string) (*model.User, error) {
 		FROM
 			users
 		WHERE
-			username=LOWER($1)
+			username=LOWER(?)
 	`
 	return s.fetchUser(query, username)
 }
@@ -464,15 +454,15 @@ func (s *Storage) UserByField(field, value string) (*model.User, error) {
 		FROM
 			users
 		WHERE
-			%s=$1
+			%s=?
 	`
-	return s.fetchUser(fmt.Sprintf(query, pq.QuoteIdentifier(field)), value)
+	return s.fetchUser(fmt.Sprintf(query, field), value)
 }
 
 // AnotherUserWithFieldExists returns true if a user has the value set for the given field.
 func (s *Storage) AnotherUserWithFieldExists(userID int64, field, value string) bool {
 	var result bool
-	s.db.QueryRow(fmt.Sprintf(`SELECT true FROM users WHERE id <> $1 AND %s=$2 LIMIT 1`, pq.QuoteIdentifier(field)), userID, value).Scan(&result)
+	s.db.QueryRow(fmt.Sprintf(`SELECT true FROM users WHERE id <> ? AND %s=? LIMIT 1`, field), userID, value).Scan(&result)
 	return result
 }
 
@@ -516,7 +506,7 @@ func (s *Storage) UserByAPIKey(token string) (*model.User, error) {
 		LEFT JOIN
 			api_keys ON api_keys.user_id=u.id
 		WHERE
-			api_keys.token = $1
+			api_keys.token = ?
 	`
 	return s.fetchUser(query, token)
 }
@@ -573,12 +563,12 @@ func (s *Storage) RemoveUser(userID int64) error {
 		return fmt.Errorf(`store: unable to start transaction: %v`, err)
 	}
 
-	if _, err := tx.Exec(`DELETE FROM users WHERE id=$1`, userID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM users WHERE id=?`, userID); err != nil {
 		tx.Rollback()
 		return fmt.Errorf(`store: unable to remove user #%d: %v`, userID, err)
 	}
 
-	if _, err := tx.Exec(`DELETE FROM integrations WHERE user_id=$1`, userID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM integrations WHERE user_id=?`, userID); err != nil {
 		tx.Rollback()
 		return fmt.Errorf(`store: unable to remove integration settings for user #%d: %v`, userID, err)
 	}
@@ -601,8 +591,8 @@ func (s *Storage) RemoveUserAsync(userID int64) {
 			return
 		}
 
-		s.db.Exec(`DELETE FROM users WHERE id=$1`, userID)
-		s.db.Exec(`DELETE FROM integrations WHERE user_id=$1`, userID)
+		s.db.Exec(`DELETE FROM users WHERE id=?`, userID)
+		s.db.Exec(`DELETE FROM integrations WHERE user_id=?`, userID)
 
 		slog.Debug("User deleted",
 			slog.Int64("user_id", userID),
@@ -612,7 +602,7 @@ func (s *Storage) RemoveUserAsync(userID int64) {
 }
 
 func (s *Storage) deleteUserFeeds(userID int64) error {
-	rows, err := s.db.Query(`SELECT id FROM feeds WHERE user_id=$1`, userID)
+	rows, err := s.db.Query(`SELECT id FROM feeds WHERE user_id=?`, userID)
 	if err != nil {
 		return fmt.Errorf(`store: unable to get user feeds: %v`, err)
 	}
@@ -733,7 +723,7 @@ func (s *Storage) CheckPassword(username, password string) error {
 	var hash string
 	username = strings.ToLower(username)
 
-	err := s.db.QueryRow("SELECT password FROM users WHERE username=$1", username).Scan(&hash)
+	err := s.db.QueryRow("SELECT password FROM users WHERE username=?", username).Scan(&hash)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf(`store: unable to find this user: %s`, username)
 	} else if err != nil {
@@ -750,7 +740,7 @@ func (s *Storage) CheckPassword(username, password string) error {
 // HasPassword returns true if the given user has a password defined.
 func (s *Storage) HasPassword(userID int64) (bool, error) {
 	var result bool
-	query := `SELECT true FROM users WHERE id=$1 AND password <> '' LIMIT 1`
+	query := `SELECT true FROM users WHERE id=? AND password <> '' LIMIT 1`
 
 	err := s.db.QueryRow(query, userID).Scan(&result)
 	if err == sql.ErrNoRows {

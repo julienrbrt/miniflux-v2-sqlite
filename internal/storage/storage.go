@@ -6,6 +6,7 @@ package storage // import "miniflux.app/v2/internal/storage"
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -22,12 +23,12 @@ func NewStorage(db *sql.DB) *Storage {
 // DatabaseVersion returns the version of the database which is in use.
 func (s *Storage) DatabaseVersion() string {
 	var dbVersion string
-	err := s.db.QueryRow(`SELECT current_setting('server_version')`).Scan(&dbVersion)
+	err := s.db.QueryRow(`SELECT sqlite_version()`).Scan(&dbVersion)
 	if err != nil {
 		return err.Error()
 	}
 
-	return dbVersion
+	return "SQLite " + dbVersion
 }
 
 // Ping checks if the database connection works.
@@ -45,12 +46,29 @@ func (s *Storage) DBStats() sql.DBStats {
 
 // DBSize returns how much size the database is using in a pretty way.
 func (s *Storage) DBSize() (string, error) {
-	var size string
+	var pageCount int64
+	var pageSize int64
 
-	err := s.db.QueryRow("SELECT pg_size_pretty(pg_database_size(current_database()))").Scan(&size)
+	err := s.db.QueryRow("PRAGMA page_count").Scan(&pageCount)
 	if err != nil {
 		return "", err
 	}
 
-	return size, nil
+	err = s.db.QueryRow("PRAGMA page_size").Scan(&pageSize)
+	if err != nil {
+		return "", err
+	}
+
+	totalBytes := pageCount * pageSize
+
+	// Format size in human readable format
+	if totalBytes < 1024 {
+		return fmt.Sprintf("%d bytes", totalBytes), nil
+	} else if totalBytes < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(totalBytes)/1024), nil
+	} else if totalBytes < 1024*1024*1024 {
+		return fmt.Sprintf("%.1f MB", float64(totalBytes)/(1024*1024)), nil
+	} else {
+		return fmt.Sprintf("%.1f GB", float64(totalBytes)/(1024*1024*1024)), nil
+	}
 }

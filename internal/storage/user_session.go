@@ -24,7 +24,7 @@ func (s *Storage) UserSessions(userID int64) (model.UserSessions, error) {
 		FROM
 			user_sessions
 		WHERE
-			user_id=$1 ORDER BY id DESC
+			user_id=? ORDER BY id DESC
 	`
 	rows, err := s.db.Query(query, userID)
 	if err != nil {
@@ -63,14 +63,14 @@ func (s *Storage) CreateUserSessionFromUsername(username, userAgent, ip string) 
 		return "", 0, fmt.Errorf(`store: unable to start transaction: %v`, err)
 	}
 
-	err = tx.QueryRow(`SELECT id FROM users WHERE username = LOWER($1)`, username).Scan(&userID)
+	err = tx.QueryRow(`SELECT id FROM users WHERE username = LOWER(?)`, username).Scan(&userID)
 	if err != nil {
 		tx.Rollback()
 		return "", 0, fmt.Errorf(`store: unable to fetch user ID: %v`, err)
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO user_sessions (token, user_id, user_agent, ip) VALUES ($1, $2, $3, $4)`,
+		`INSERT INTO user_sessions (token, user_id, user_agent, ip) VALUES (?, ?, ?, ?)`,
 		token,
 		userID,
 		userAgent,
@@ -99,11 +99,11 @@ func (s *Storage) UserSessionByToken(token string) (*model.UserSession, error) {
 			token,
 			created_at,
 			user_agent,
-			ip 
+			ip
 		FROM
 			user_sessions
 		WHERE
-			token = $1
+			token = ?
 	`
 	err := s.db.QueryRow(query, token).Scan(
 		&session.ID,
@@ -126,7 +126,7 @@ func (s *Storage) UserSessionByToken(token string) (*model.UserSession, error) {
 
 // RemoveUserSessionByToken remove a session by using the token.
 func (s *Storage) RemoveUserSessionByToken(userID int64, token string) error {
-	query := `DELETE FROM user_sessions WHERE user_id=$1 AND token=$2`
+	query := `DELETE FROM user_sessions WHERE user_id=? AND token=?`
 	result, err := s.db.Exec(query, userID, token)
 	if err != nil {
 		return fmt.Errorf(`store: unable to remove this user session: %v`, err)
@@ -146,7 +146,7 @@ func (s *Storage) RemoveUserSessionByToken(userID int64, token string) error {
 
 // RemoveUserSessionByID remove a session by using the ID.
 func (s *Storage) RemoveUserSessionByID(userID, sessionID int64) error {
-	query := `DELETE FROM user_sessions WHERE user_id=$1 AND id=$2`
+	query := `DELETE FROM user_sessions WHERE user_id=? AND id=?`
 	result, err := s.db.Exec(query, userID, sessionID)
 	if err != nil {
 		return fmt.Errorf(`store: unable to remove this user session: %v`, err)
@@ -170,9 +170,9 @@ func (s *Storage) CleanOldUserSessions(days int) int64 {
 		DELETE FROM
 			user_sessions
 		WHERE
-			created_at < now() - $1::interval
+			created_at < datetime('now', '-' || ? || ' days')
 	`
-	result, err := s.db.Exec(query, fmt.Sprintf("%d days", days))
+	result, err := s.db.Exec(query, days)
 	if err != nil {
 		return 0
 	}

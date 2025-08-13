@@ -15,14 +15,14 @@ var ErrAPIKeyNotFound = fmt.Errorf("store: API Key not found")
 // APIKeyExists checks if an API Key with the same description exists.
 func (s *Storage) APIKeyExists(userID int64, description string) bool {
 	var result bool
-	query := `SELECT true FROM api_keys WHERE user_id=$1 AND lower(description)=lower($2) LIMIT 1`
+	query := `SELECT true FROM api_keys WHERE user_id=? AND lower(description)=lower(?) LIMIT 1`
 	s.db.QueryRow(query, userID, description).Scan(&result)
 	return result
 }
 
 // SetAPIKeyUsedTimestamp updates the last used date of an API Key.
 func (s *Storage) SetAPIKeyUsedTimestamp(userID int64, token string) error {
-	query := `UPDATE api_keys SET last_used_at=now() WHERE user_id=$1 and token=$2`
+	query := `UPDATE api_keys SET last_used_at=datetime('now') WHERE user_id=? and token=?`
 	_, err := s.db.Exec(query, userID, token)
 	if err != nil {
 		return fmt.Errorf(`store: unable to update last used date for API key: %v`, err)
@@ -39,7 +39,7 @@ func (s *Storage) APIKeys(userID int64) (model.APIKeys, error) {
 		FROM
 			api_keys
 		WHERE
-			user_id=$1
+			user_id=?
 		ORDER BY description ASC
 	`
 	rows, err := s.db.Query(query, userID)
@@ -70,21 +70,28 @@ func (s *Storage) APIKeys(userID int64) (model.APIKeys, error) {
 
 // CreateAPIKey inserts a new API key.
 func (s *Storage) CreateAPIKey(userID int64, description string) (*model.APIKey, error) {
+	token := crypto.GenerateRandomStringHex(32)
 	query := `
 		INSERT INTO api_keys
 			(user_id, token, description)
 		VALUES
-			($1, $2, $3)
-		RETURNING
-			id, user_id, token, description, last_used_at, created_at
+			(?, ?, ?)
 	`
+	result, err := s.db.Exec(query, userID, token, description)
+	if err != nil {
+		return nil, fmt.Errorf(`store: unable to create API Key: %v`, err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf(`store: unable to get API Key ID: %v`, err)
+	}
+
+	// Get the created API key
 	var apiKey model.APIKey
-	err := s.db.QueryRow(
-		query,
-		userID,
-		crypto.GenerateRandomStringHex(32),
-		description,
-	).Scan(
+	err = s.db.QueryRow(`
+		SELECT id, user_id, token, description, last_used_at, created_at
+		FROM api_keys WHERE id = ?`, id).Scan(
 		&apiKey.ID,
 		&apiKey.UserID,
 		&apiKey.Token,
@@ -101,7 +108,7 @@ func (s *Storage) CreateAPIKey(userID int64, description string) (*model.APIKey,
 
 // DeleteAPIKey deletes an API Key.
 func (s *Storage) DeleteAPIKey(userID, keyID int64) error {
-	result, err := s.db.Exec(`DELETE FROM api_keys WHERE id = $1 AND user_id = $2`, keyID, userID)
+	result, err := s.db.Exec(`DELETE FROM api_keys WHERE id = ? AND user_id = ?`, keyID, userID)
 	if err != nil {
 		return fmt.Errorf(`store: unable to delete this API Key: %v`, err)
 	}
